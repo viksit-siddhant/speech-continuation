@@ -1,3 +1,4 @@
+import os
 import torch
 import torchaudio
 import numpy as np
@@ -5,34 +6,26 @@ import transformers
 
 
 class LibriSpeechDataset(torch.utils.data.Dataset):
-    def __init__(self, dataset, tokenizer):
+    def __init__(self):
         super().__init__()
-        self.dataset = dataset
-        self.tokenizer = tokenizer
+        os.makedirs("./dataset", exist_ok=True)
+        self.dataset = torchaudio.datasets.LIBRISPEECH("./dataset", url="train-clean-100", download=True)
+        self.tokenizer = transformers.AutoTokenizer.from_pretrained("HuggingFaceTB/SmolLM-360M")
         self.tokenizer.add_tokens(["[SOS]"])
 
     def __len__(self):
         return len(self.dataset)
 
     def __getitem__(self, idx: int) -> tuple[torch.Tensor]:
-        sample = self.dataset[idx]
-        waveform, sample_rate, text = self._parse_sample(sample)
+        waveform, sample_rate, text, *_ = self.dataset[idx]
         spectrogram = self._generate_spectrogram(waveform, sample_rate)
         first_half, second_half = self._split_spectrogram(spectrogram)
         text_labels = self._encode_text(text)
         return first_half, second_half, text_labels
 
-    def _parse_sample(self, sample) -> tuple[np.ndarray, int, str]:
-        audio_data = sample["audio"]
-        waveform = np.array(audio_data["array"])
-        sample_rate = audio_data["sampling_rate"]
-        text = sample["text"]
-        return waveform, sample_rate, text
-
     def _generate_spectrogram(self, waveform: np.ndarray, sample_rate: int) -> torch.Tensor:
         transform = torchaudio.transforms.MelSpectrogram(sample_rate=sample_rate, n_mels=128, n_fft=1024, hop_length=512)
-        waveform_tensor = torch.tensor(waveform).unsqueeze(0).float()
-        return transform(waveform_tensor)
+        return transform(waveform.float())
 
     def _split_spectrogram(self, spectrogram: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         half_length = spectrogram.shape[-1] // 2
