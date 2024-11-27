@@ -4,7 +4,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from transformers import AutoModel, AutoConfig, AutoTokenizer, WhisperModel
 import transformers
-
+from einops import rearrange
 import torch
 import torch.nn as nn
 
@@ -114,7 +114,8 @@ class Spectron(nn.Module):
         continuation = self.prenet(continuation)
         #Assuming prompt, transcript, continuation : [b,l,c]
         transcript = self.lm.embed_tokens(transcript)
-        lm_input = torch.concatenate([prompt,transcript,continuation],dim=1)
+        eos_embed = self.lm.embed_tokens(torch.tensor(self.tokenizer.eos_token_id).unsqueeze(0))
+        lm_input = torch.concatenate([prompt,transcript,continuation,eos_embed],dim=1)
         lm_output = self.lm(input_embeds=lm_input)
         bos_token = prompt.size()[1]
         eos_token = bos_token+transcript.size()[1]-1
@@ -136,3 +137,28 @@ class Spectron(nn.Module):
         bos = torch.tensor(bos).unsqueeze(0)
         bos = self.lm.embed_tokens(bos)
         prompt = torch.concatenate([prompt,bos],dim=1)
+        start = prompt.size()[1]
+        transcript = ""
+        eos_count = 0
+        continuation = []
+        limit = 1000
+        for i in range(limit):
+            lm_output = self.lm(input_embeds=prompt)
+            token = lm_output[0,-1, :]
+            token = self.text_head(token).argmax()
+            token = token.unsqueeze(0)
+            if token.item() == self.tokenizer.eos_token_id:
+                eos_count += 1
+                if eos_count == 2:
+                    break
+                prompt = torch.concatenate([prompt,self.lm.embed_tokens(token)],dim=1)
+                continue
+            if eos_count == 0:
+                prompt = torch.concatenate([prompt,self.lm.embed_tokens(token)],dim=1)
+                transcript += self.tokenizer.decode(token.squeeze())
+            else:
+                frame = lm_output[0,-1, :].unsqueeze(0)
+                continuation.append(self.postnet(frame))
+                prompt = torch.concatenate([prompt,frame],dim=1)
+        return transcript, continuation
+
