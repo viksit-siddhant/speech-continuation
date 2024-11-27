@@ -1,25 +1,108 @@
 import torch
 import torch.nn as nn
 import numpy as np
-import librosa
 import matplotlib.pyplot as plt
+from transformers import AutoModel, AutoConfig, AutoTokenizer, WhisperModel
+import transformers
+
+import torch
+import torch.nn as nn
+
+class SpeechContinuationLoss(nn.Module):
+    def __init__(self, max_k):
+        """
+        Initialize the SpeechContinuationLoss.
+
+        Args:
+        max_k (int): The maximum order for the discrete derivative loss (K).
+        """
+        super(SpeechContinuationLoss, self).__init__()
+        self.max_k = max_k
+
+    def compute_deltas(self, z, k, dim):
+        """
+        Compute the discrete deltas (derivatives) along a given dimension.
+
+        Args:
+        z (torch.Tensor): Input tensor of shape (batch, freq, time).
+        k (int): Order of the delta.
+        dim (int): Dimension along which to compute the delta.
+
+        Returns:
+        torch.Tensor: The computed delta.
+        """
+        if dim == 2:  # Time-deltas
+            return z[:, :, k:] - z[:, :, :-k]
+        elif dim == 1:  # Feature-deltas
+            return z[:, k:, :] - z[:, :-k, :]
+
+    def l1_l2_loss(self, z, z_pred):
+        """
+        Compute the combined L1 and L2 loss.
+
+        Args:
+        z (torch.Tensor): Ground truth tensor of shape (batch, freq, time).
+        z_pred (torch.Tensor): Predicted tensor of the same shape.
+
+        Returns:
+        torch.Tensor: The combined L1 and L2 loss.
+        """
+        l1_loss = torch.sum(torch.abs(z - z_pred))
+        l2_loss = torch.sum((z - z_pred) ** 2)
+        return l1_loss + l2_loss
+
+    def forward(self, x_c, x_c_hat):
+        """
+        Compute the speech continuation loss.
+
+        Args:
+        x_c (torch.Tensor): Ground truth spectrogram of shape (batch, freq, time).
+        x_c_hat (torch.Tensor): Predicted spectrogram of the same shape.
+
+        Returns:
+        torch.Tensor: The total reconstruction loss.
+        """
+        # Ls: L1+2 loss on the spectrogram
+        ls_loss = self.l1_l2_loss(x_c, x_c_hat)
+
+        # Lf: L1+2 loss on feature deltas up to order 1
+        lf_loss = 0
+        for k in range(1, 2):  # Assuming order K = 1
+            delta_feat_gt = self.compute_deltas(x_c, k, dim=1)
+            delta_feat_pred = self.compute_deltas(x_c_hat, k, dim=1)
+            lf_loss += self.l1_l2_loss(delta_feat_gt, delta_feat_pred)
+
+        # Lt: L1+2 loss on time deltas up to order K
+        lt_loss = 0
+        for k in range(1, self.max_k + 1):
+            delta_time_gt = self.compute_deltas(x_c, k, dim=2)
+            delta_time_pred = self.compute_deltas(x_c_hat, k, dim=2)
+            lt_loss += self.l1_l2_loss(delta_time_gt, delta_time_pred)
+
+        # Total loss
+        total_loss = ls_loss + lf_loss + lt_loss
+        return total_loss
+
 
 class Spectron(nn.Module):
     def __init__(self, mel_dims):
-        speech_emb_dim = 495 #Placeholder
-        lm_emb_dim = 495 #Placeholder
-        self.speech_encoder = None
+        self.lm = AutoModel.from_pretrained("HuggingFaceTB/SmolLM-360M")
+        self.tokenizer = AutoTokenizer.from_pretrained("HuggingFaceTB/SmolLM-360M")
+        self.lm.config.is_decoder = True
+        speech_emb_dim = 512
+        lm_emb_dim = self.lm.config.hidden_size
+        self.speech_encoder = WhisperModel.from_pretrained('openai/whisper-base')
         self.prenet = nn.Sequential(
             nn.Linear(mel_dims, 360),
             nn.Linear(360,lm_emb_dim)
         )
         self.postnet = nn.Sequential(
             nn.Linear(lm_emb_dim,360),
-            nn.Linear()
+            nn.Linear(360,mel_dims)
         )
         self.connector = nn.Linear(speech_emb_dim,lm_emb_dim)
-        self.lm = None
-        self.text_head = None
+        self.text_head = nn.Linear(lm_emb_dim,self.lm.config.vocab_size)
+        self.recon_loss = SpeechContinuationLoss(2)
 
     def process_prompt(self, prompt):
         enc_speech = self.speech_encoder(prompt)
@@ -41,10 +124,14 @@ class Spectron(nn.Module):
         return transcript, continuation
 
     def compute_loss(self, transcript, continuation, target_transcript, target_continuation):
-        pass
+        lm_loss = nn.functional.cross_entropy(transcript,target_transcript)
+        recon_loss = self.recon_loss(continuation,target_continuation)
+        return lm_loss + recon_loss
 
-    def generate(self, prompt, bos):
+
+    def generate(self, prompt):
         prompt = self.process_prompt(prompt)
+        bos = self.tokenizer.bos_token_id
+        bos = torch.tensor(bos).unsqueeze(0)
+        bos = self.lm.embed_tokens(bos)
         prompt = torch.concatenate([prompt,bos],dim=1)
-        while True:
-            lm_input = self.prenet
