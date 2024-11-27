@@ -113,8 +113,9 @@ class Spectron(nn.Module):
         prompt = self.process_prompt(prompt)
         continuation = self.prenet(continuation)
         #Assuming prompt, transcript, continuation : [b,l,c]
+        transcript = self.lm.embed_tokens(transcript)
         lm_input = torch.concatenate([prompt,transcript,continuation],dim=1)
-        lm_output = self.lm(lm_input)
+        lm_output = self.lm(input_embeds=lm_input)
         bos_token = prompt.size()[1]
         eos_token = bos_token+transcript.size()[1]-1
         transcript = lm_output[:,bos_token:eos_token+1,:]
