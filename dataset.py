@@ -11,7 +11,6 @@ class LibriSpeechDataset(torch.utils.data.Dataset):
         os.makedirs("./dataset", exist_ok=True)
         self.dataset = torchaudio.datasets.LIBRISPEECH("./dataset", url="train-clean-100", download=True)
         self.tokenizer = transformers.AutoTokenizer.from_pretrained("HuggingFaceTB/SmolLM-360M")
-        self.tokenizer.add_tokens(["[SOS]"])
 
     def __len__(self):
         return len(self.dataset)
@@ -34,5 +33,5 @@ class LibriSpeechDataset(torch.utils.data.Dataset):
         return first_half, second_half
 
     def _encode_text(self, text: str) -> torch.Tensor:
-        sentence = f"[SOS] {text} {self.tokenizer.eos_token}"
-        return torch.tensor(self.tokenizer.encode(sentence))
+        sentence = f"{self.tokenizer.bos_token} {text} {self.tokenizer.eos_token}"
+        return self.tokenizer.encode(sentence, add_special_tokens=False, return_tensors="pt").squeeze()
